@@ -9,7 +9,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
-  FileText,
   Palette,
   Maximize2,
   MoveHorizontal,
@@ -25,7 +24,6 @@ import {
   type PdfThemePresetId,
 } from './types/pdf';
 import {
-  createSamplePdfArrayBuffer,
   exportRecoloredPdf,
   getHexLuminance,
   pdfjsLib,
@@ -185,17 +183,6 @@ export default function App() {
     },
     [loadPdfFromBuffer]
   );
-
-  // Load built-in 3-page sample PDF
-  const handleLoadSamplePdf = useCallback(async () => {
-    const buffer = createSamplePdfArrayBuffer();
-    await loadPdfFromBuffer(
-      buffer,
-      'FolioTone-Optical-Contrast-Spec.pdf',
-      buffer.byteLength,
-      true
-    );
-  }, [loadPdfFromBuffer]);
 
   // Quick Toggle between Light and Dark mode (both UI and PDF background)
   const handleToggleLightDark = () => {
@@ -365,52 +352,6 @@ export default function App() {
           FolioTone
         </a>
 
-        {/* Zone 2: Clean single-line navigation links */}
-        <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600 dark:text-slate-400">
-          <a
-            href="#workspace"
-            onClick={(e) => {
-              e.preventDefault();
-              fileInputRef.current?.click();
-            }}
-            className="hover:text-slate-900 dark:hover:text-white transition-colors whitespace-nowrap shrink-0"
-          >
-            Open Local PDF
-          </a>
-          <a
-            href="#sample"
-            onClick={(e) => {
-              e.preventDefault();
-              handleLoadSamplePdf();
-            }}
-            className="hover:text-slate-900 dark:hover:text-white transition-colors whitespace-nowrap shrink-0"
-          >
-            Sample Document
-          </a>
-          <a
-            href="#color-studio"
-            onClick={(e) => {
-              e.preventDefault();
-              setIsColorPopoverOpen((prev) => !prev);
-            }}
-            className="hover:text-slate-900 dark:hover:text-white transition-colors whitespace-nowrap shrink-0"
-          >
-            Background Studio
-          </a>
-          {docMeta && (
-            <a
-              href="#export"
-              onClick={(e) => {
-                e.preventDefault();
-                handleExportColoredPdf();
-              }}
-              className="hover:text-slate-900 dark:hover:text-white transition-colors whitespace-nowrap shrink-0"
-            >
-              Export Colored PDF
-            </a>
-          )}
-        </nav>
-
         {/* Zone 3: 1 primary action */}
         <div className="flex items-center gap-3 shrink-0">
           <button
@@ -513,7 +454,7 @@ export default function App() {
             <div className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400">
               <span>No PDF loaded</span>
               <span aria-hidden="true">·</span>
-              <span>Upload a file or launch sample to inspect pages</span>
+              <span>Upload a PDF file to inspect pages</span>
             </div>
           )}
         </div>
@@ -810,18 +751,6 @@ export default function App() {
                     >
                       <Upload className="w-4 h-4" />
                       Choose PDF File
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleLoadSamplePdf();
-                      }}
-                      className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <FileText className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                      Try with Sample PDF
                     </button>
                   </div>
                 </div>
