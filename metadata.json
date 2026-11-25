@@ -1,0 +1,6 @@
+{
+  "name": "FolioTone — PDF Reader & Background Studio",
+  "description": "Precision PDF.js document reader with instant Light/Dark mode contrast inversion, Sepia, custom background color tinting, thumbnail navigation, and themed PDF export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
