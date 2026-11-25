@@ -115,6 +115,7 @@ export function transformPdfImageData(
 /**
  * Exports all pages of the currently loaded PDFDocumentProxy with the active
  * background and ink color transformation baked into each page.
+ * Releases canvas and page memory after every single page to prevent OOM on large files.
  */
 export async function exportRecoloredPdf(
   pdfDoc: pdfjsLib.PDFDocumentProxy,
@@ -124,61 +125,75 @@ export async function exportRecoloredPdf(
 ): Promise<void> {
   const totalPages = pdfDoc.numPages;
   let exportDoc: jsPDF | null = null;
+  // Adaptive export scale so large multi-hundred-page PDFs do not exceed browser memory limits
+  const exportScale = totalPages > 60 ? 1.35 : 1.75;
 
   for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
     onProgress(pageNum, totalPages);
     const page = await pdfDoc.getPage(pageNum);
     const baseViewport = page.getViewport({ scale: 1.0 });
-    // High-resolution 2x scale for crisp exported text
-    const exportViewport = page.getViewport({ scale: 2.0 });
+    const exportViewport = page.getViewport({ scale: exportScale });
 
     const offscreenCanvas = document.createElement('canvas');
-    offscreenCanvas.width = exportViewport.width;
-    offscreenCanvas.height = exportViewport.height;
+    offscreenCanvas.width = Math.floor(exportViewport.width);
+    offscreenCanvas.height = Math.floor(exportViewport.height);
     const ctx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) continue;
 
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fillRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
+    if (ctx) {
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
 
-    await page.render({
-      canvasContext: ctx,
-      viewport: exportViewport,
-      canvas: offscreenCanvas,
-    }).promise;
+      await page.render({
+        canvasContext: ctx,
+        viewport: exportViewport,
+        canvas: offscreenCanvas,
+      }).promise;
 
-    const rawImageData = ctx.getImageData(0, 0, offscreenCanvas.width, offscreenCanvas.height);
-    const coloredImageData = transformPdfImageData(rawImageData, colorConfig);
-    ctx.putImageData(coloredImageData, 0, 0);
+      const rawImageData = ctx.getImageData(0, 0, offscreenCanvas.width, offscreenCanvas.height);
+      const coloredImageData = transformPdfImageData(rawImageData, colorConfig);
+      ctx.putImageData(coloredImageData, 0, 0);
 
-    const imgDataUrl = offscreenCanvas.toDataURL('image/jpeg', 0.92);
-    const orientation = baseViewport.width > baseViewport.height ? 'landscape' : 'portrait';
+      const imgDataUrl = offscreenCanvas.toDataURL('image/jpeg', 0.88);
+      const orientation = baseViewport.width > baseViewport.height ? 'landscape' : 'portrait';
 
-    if (!exportDoc) {
-      exportDoc = new jsPDF({
-        orientation,
-        unit: 'pt',
-        format: [baseViewport.width, baseViewport.height],
-      });
-    } else {
-      exportDoc.addPage([baseViewport.width, baseViewport.height], orientation);
+      if (!exportDoc) {
+        exportDoc = new jsPDF({
+          orientation,
+          unit: 'pt',
+          format: [baseViewport.width, baseViewport.height],
+          compress: true,
+        });
+      } else {
+        exportDoc.addPage([baseViewport.width, baseViewport.height], orientation);
+      }
+
+      exportDoc.addImage(
+        imgDataUrl,
+        'JPEG',
+        0,
+        0,
+        baseViewport.width,
+        baseViewport.height,
+        undefined,
+        'FAST'
+      );
     }
 
-    exportDoc.addImage(
-      imgDataUrl,
-      'JPEG',
-      0,
-      0,
-      baseViewport.width,
-      baseViewport.height,
-      undefined,
-      'FAST'
-    );
+    // Immediate memory cleanup after each page
+    offscreenCanvas.width = 0;
+    offscreenCanvas.height = 0;
+    page.cleanup();
+
+    // Yield to browser GC & UI thread
+    await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
   if (exportDoc) {
     const cleanBase = originalFilename.replace(/\.pdf$/i, '');
-    const suffix = colorConfig.presetId === 'custom' ? colorConfig.bgColor.replace('#', '') : colorConfig.presetId;
+    const suffix =
+      colorConfig.presetId === 'custom'
+        ? colorConfig.bgColor.replace('#', '')
+        : colorConfig.presetId;
     exportDoc.save(`${cleanBase}-${suffix}.pdf`);
   }
 }

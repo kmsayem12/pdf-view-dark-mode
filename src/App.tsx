@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
 import {
   Upload,
   Sun,
@@ -81,6 +82,25 @@ export default function App() {
   const viewportStageRef = useRef<HTMLDivElement>(null);
   const popoverWrapperRef = useRef<HTMLDivElement>(null);
 
+  // Track active Blob URL and PDFDocumentProxy so we can free memory on new uploads or unmount
+  const activeBlobUrlRef = useRef<string | null>(null);
+  const activePdfDocRef = useRef<PDFDocumentProxy | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (activePdfDocRef.current) {
+        try {
+          activePdfDocRef.current.cleanup();
+        } catch {
+          // Ignore
+        }
+      }
+      if (activeBlobUrlRef.current) {
+        URL.revokeObjectURL(activeBlobUrlRef.current);
+      }
+    };
+  }, []);
+
   // Sync <html class="dark"> with isDarkUi
   useEffect(() => {
     const root = document.documentElement;
@@ -139,50 +159,77 @@ export default function App() {
     return () => observer.disconnect();
   }, [fitMode, basePageSize, computeFittedScale, isSidebarOpen]);
 
-  // Load PDF from an ArrayBuffer
-  const loadPdfFromBuffer = useCallback(
-    async (buffer: ArrayBuffer, filename: string, sizeBytes: number, isSample = false) => {
-      setIsLoadingDoc(true);
-      setErrorMsg(null);
+  // Zero-Copy Blob URL File Upload (prevents main-thread ArrayBuffer duplication on 160 MB+ files)
+  const handleFileUpload = useCallback(async (file: File | null | undefined) => {
+    if (!file) return;
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      setErrorMsg('Please select a valid PDF document (.pdf).');
+      return;
+    }
+
+    setIsLoadingDoc(true);
+    setErrorMsg(null);
+
+    try {
+      // Clean up previous PDF instance and revoke previous Blob URL to reclaim memory first
+      if (activePdfDocRef.current) {
+        try {
+          await activePdfDocRef.current.cleanup();
+        } catch {
+          // Ignore
+        }
+        activePdfDocRef.current = null;
+      }
+      if (activeBlobUrlRef.current) {
+        URL.revokeObjectURL(activeBlobUrlRef.current);
+        activeBlobUrlRef.current = null;
+      }
+
+      const blobUrl = URL.createObjectURL(file);
+      activeBlobUrlRef.current = blobUrl;
+
+      const loadingTask = pdfjsLib.getDocument({
+        url: blobUrl,
+        disableAutoFetch: true,
+        disableStream: false,
+        rangeChunkSize: 65536,
+      });
+
+      const pdfDoc = await loadingTask.promise;
+      activePdfDocRef.current = pdfDoc;
+
+      // Read Page 1 base dimensions upfront so virtualized page slots have accurate dimensions immediately
       try {
-        const loadingTask = pdfjsLib.getDocument({ data: buffer });
-        const pdfDoc = await loadingTask.promise;
-
-        setDocMeta({
-          name: filename,
-          sizeBytes,
-          numPages: pdfDoc.numPages,
-          pdfDoc,
-          isSample,
+        const firstPage = await pdfDoc.getPage(1);
+        const unscaled = firstPage.getViewport({ scale: 1.0 });
+        setBasePageSize({
+          width: unscaled.width,
+          height: unscaled.height,
         });
-        setCurrentPage(1);
-        setPageInputText('1');
-      } catch (err: unknown) {
-        const msg =
-          err instanceof Error
-            ? err.message
-            : 'Unable to parse PDF file. Please choose a valid PDF document.';
-        setErrorMsg(`Failed to open PDF: ${msg}`);
-      } finally {
-        setIsLoadingDoc(false);
+        firstPage.cleanup();
+      } catch {
+        // Fallback to standard A4 dimensions if Page 1 probe fails
       }
-    },
-    []
-  );
 
-  // Handle file selection from input or drag-and-drop
-  const handleFileUpload = useCallback(
-    async (file: File | null | undefined) => {
-      if (!file) return;
-      if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-        setErrorMsg('Please select a valid PDF document (.pdf).');
-        return;
-      }
-      const arrayBuffer = await file.arrayBuffer();
-      await loadPdfFromBuffer(arrayBuffer, file.name, file.size, false);
-    },
-    [loadPdfFromBuffer]
-  );
+      setDocMeta({
+        name: file.name,
+        sizeBytes: file.size,
+        numPages: pdfDoc.numPages,
+        pdfDoc,
+        isSample: false,
+      });
+      setCurrentPage(1);
+      setPageInputText('1');
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'Unable to parse PDF file. Please choose a valid PDF document.';
+      setErrorMsg(`Failed to open PDF: ${msg}`);
+    } finally {
+      setIsLoadingDoc(false);
+    }
+  }, []);
 
   // Quick Toggle between Light and Dark mode (both UI and PDF background)
   const handleToggleLightDark = () => {
@@ -247,22 +294,6 @@ export default function App() {
     setCurrentPage(visiblePage);
     setPageInputText(String(visiblePage));
   }, []);
-
-  // Handle base dimensions callback from Page 1
-  const handleBaseDimensionsKnown = useCallback(
-    (w: number, h: number) => {
-      setBasePageSize((prev) => {
-        if (Math.abs(prev.width - w) < 1 && Math.abs(prev.height - h) < 1) {
-          return prev;
-        }
-        return { width: w, height: h };
-      });
-      if (fitMode !== 'manual') {
-        computeFittedScale(fitMode, w, h);
-      }
-    },
-    [fitMode, computeFittedScale]
-  );
 
   // Zoom adjustment handlers
   const handleZoomStep = (delta: number) => {
@@ -339,7 +370,7 @@ export default function App() {
         className="hidden"
       />
 
-      {/* Zone 1, 2, 3 Top Bar Contract */}
+      {/* Top Bar */}
       <header className="flex items-center justify-between gap-8 px-6 py-3 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shrink-0">
         {/* Zone 1: Single text element wordmark */}
         <a
@@ -667,23 +698,22 @@ export default function App() {
               onSelectPage={scrollToPage}
             />
 
-            {/* Main PDF.js Scrollable Stage */}
+            {/* Main PDF.js Virtualized Scrollable Stage */}
             <main
               ref={viewportStageRef}
               className="flex-1 overflow-y-auto overflow-x-auto bg-slate-200/70 dark:bg-slate-950 p-6 md:p-8 flex flex-col items-center gap-8"
             >
               {pagesArray.map((pageNum) => (
                 <PdfPageCanvas
-                  key={`${docMeta.name}-${pageNum}`}
+                  key={`${docMeta.name}-${docMeta.sizeBytes}-${pageNum}`}
                   pdfDoc={docMeta.pdfDoc}
                   pageNumber={pageNum}
                   scale={zoomScale}
+                  defaultBaseWidth={basePageSize.width}
+                  defaultBaseHeight={basePageSize.height}
                   colorConfig={colorConfig}
                   isCurrentPage={pageNum === currentPage}
                   onPageVisible={handlePageVisible}
-                  onBaseDimensionsKnown={
-                    pageNum === 1 ? handleBaseDimensionsKnown : undefined
-                  }
                 />
               ))}
             </main>
@@ -696,9 +726,9 @@ export default function App() {
               <div className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-8 flex flex-col justify-between">
                 <div>
                   <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-                    <span>PDF.js Canvas Engine</span>
+                    <span>PDF.js Virtualized Stream Engine</span>
                     <span aria-hidden="true">·</span>
-                    <span>100% Local Browser Rendering</span>
+                    <span>Supports 160 MB+ Large Files</span>
                     <span aria-hidden="true">·</span>
                     <span>Zero Upload Delay</span>
                   </div>
@@ -737,7 +767,7 @@ export default function App() {
                     Click to select a PDF file, or drag and drop it here
                   </p>
                   <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                    Supports any standard `.pdf` document, e-book, or academic paper
+                    Supports large 160 MB+ books, scanned PDFs, and academic papers via virtualized rendering
                   </p>
 
                   <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
@@ -758,7 +788,7 @@ export default function App() {
                 {isLoadingDoc && (
                   <div className="mt-4 flex items-center gap-2 text-xs text-indigo-600 dark:text-indigo-400 font-medium">
                     <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent" />
-                    <span>Rendering PDF document pages...</span>
+                    <span>Streaming PDF document pages...</span>
                   </div>
                 )}
               </div>
